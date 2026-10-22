@@ -1,0 +1,4 @@
+config.local.toml
+outputs/
+__pycache__/
+*.pyc
