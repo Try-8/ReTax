@@ -1,6 +1,6 @@
 # Retirement & Tax Strategy Model — Design Document
 
-**Status:** v0 built (deterministic, federal tax only). Update the Decisions Log and Roadmap at the end of every work session.
+**Status:** v1 built (deterministic; federal tax incl. Social Security taxation; per-person accounts; 59½ rule; selectable withdrawal strategies). Update the Decisions Log and Roadmap at the end of every work session.
 **Privacy rule:** Real personal data lives only in `config.local.toml` on the user's machine. Never paste real balances or birth dates into chat; use the template.
 
 ---
@@ -33,11 +33,11 @@ Three layers plus wrappers, so new features are additions, not rewrites:
 
 1. **Inputs / assumptions** — `config.local.toml` → `Params` (`model.load_params`). Tax law lives in data tables (`taxes.py`).
 2. **Year-by-year engine** — `model.simulate()`. Taxes, withdrawals, growth for each year.
-3. **Strategy layer** — rules for withdrawal order, conversions, spending. v0: `withdrawal_order` only.
+3. **Strategy layer** — rules for withdrawal order, conversions, spending. v1: named withdrawal plans in `model.STRATEGIES` (an ordered list of `(category, cap)` steps; `cap` = none or the indexed standard deduction). Roth conversions come later.
 4. **Solver** — `model.solve_max_w()` (bisection on W; circular tax gross-up is solved inside each year by bisection on the gross draw).
 5. **Wrappers (planned)** — scenario grids (inheritance timing), Monte Carlo (returns, inflation, death dates).
 
-**Files:** `DESIGN.md`, `config.template.toml`, `taxes.py`, `model.py`, `run.py`, `test_model.py`, `.gitignore`.
+**Files:** `DESIGN.md`, `config.template.toml`, `taxes.py` (tax tables and functions), `rules.py` (SS full retirement age/timing, 59½ rule), `model.py`, `run.py`, `test_model.py`, `golden/representative_scenario.json` (regression baseline), `.gitignore`.
 **Run:** `python run.py` (reads `config.local.toml`). **Test:** `python -m unittest -v`. Python 3.11+, standard library only.
 
 ## 4. Conventions
@@ -49,6 +49,10 @@ Three layers plus wrappers, so new features are additions, not rewrites:
 - Subscripts: 1 = you, 2 = spouse, F = father, M = mother; t = month, y = year, i = Monte Carlo path.
 - Success = no unfunded spending (tolerance $0.01).
 - Verify all tax figures against current IRS publications before trusting results.
+- **Social Security:** the config value is the monthly benefit at Full Retirement Age in start-year dollars; it stays constant in real terms (COLA = inflation). Benefits start in the month each person reaches FRA. Surplus income (benefits exceeding spending plus tax) is saved to cash.
+- **Provisional-income thresholds ($32k/$44k MFJ, $25k/$34k single) are NOT inflation-indexed**; they are compared against nominal income, so more benefit becomes taxable over time.
+- **59½ rule:** an owner's retirement accounts (traditional and Roth) are locked until the calendar year they turn 59½ (if that is by June 30; otherwise the following year). Locked money is touched only after every other source is exhausted, and then a 10% penalty applies and is reported (`penalty_early_withdrawal`, `early_withdrawal_flag`).
+- Within the "trad"/"roth" categories, the older person's accounts are drawn first.
 
 ## 5. Variable List
 
@@ -218,6 +222,10 @@ Working assumption: each event ≈ $1.5M (range $1.0M–$2.0M real), majority (~
 | `Own_acct` | Beneficiary choice | Titling, which spouse inherits |
 | `Order_acct` | Spouse account ordering | Whose accounts to draw first |
 | `Dis_mode` | Post-first-death plan change | How plan adjusts |
+| `Strat` | Withdrawal strategy name | Which built-in plan is used (**v1: implemented**) |
+| `Std_cap` | Standard-deduction cap | Cap on a step's draw, indexed (**v1**) |
+| `Early_order` | Last-resort order for locked accounts | Roth vs. traditional when penalized money is unavoidable (**v1**) |
+| `SSB_mult` | SS benefit multiplier | Sensitivity knob for a benefit cut (**v1**) |
 
 ### J. Computed and state variables
 | Symbol | Name | Description |
@@ -230,6 +238,9 @@ Working assumption: each event ≈ $1.5M (range $1.0M–$2.0M real), majority (~
 | `τ_marg`, `τ_eff` | Marginal/effective rates | Federal + state |
 | `IRMAA_tier(t)`, `IRMAA_sur(t)` | IRMAA tier and surcharge | From lookback year |
 | `Gap(t)` | Funding shortfall | Unfunded spending |
+| `Lock(t)` | Locked accounts | Owners' accounts still before 59½ (**v1**) |
+| `Pen_ewp(t)` | Early-withdrawal penalty paid | 10% of locked-account draws (**v1**) |
+| `Surplus(t)` | Surplus income saved | Income beyond spending plus tax, added to cash (**v1**) |
 
 ### K. Outputs and metrics
 | Symbol | Name | Description |
@@ -246,21 +257,46 @@ Working assumption: each event ≈ $1.5M (range $1.0M–$2.0M real), majority (~
 | `P_succ` | Probability of success | Fraction of paths funded |
 | `ε_W` | Solver tolerance | Stopping criterion |
 
-## 6. v0 Scope
+## 5b. Testing approach
 
-**Implemented:** TOML config loader; four buckets (cash, taxable w/ basis, traditional, Roth) combined across spouses; single nominal return and inflation; federal ordinary + LTCG tax with standard deduction, indexed by inflation; fixed withdrawal order; after-tax gross-up; bisection solver for W; flat and curve spending; dated real-dollar purchases; CSV output; unit tests with closed-form checks.
+Run from the project folder: `python -m unittest` (fast loop) · `SLOW_TESTS=1 python -m unittest -v` (everything; run before trusting a change) · `UPDATE_GOLDEN=1 python -m unittest` (re-record the golden file — only after an *intended* change to the numbers, e.g. a corrected tax table; review the diff first).
 
-**Known simplifications in v0:**
-- One return for all buckets (no dividend/interest tax drag in the taxable account).
-- Filing status fixed for the whole horizon (no death or single-filer switch).
-- No Social Security, RMDs, IRMAA, senior deduction, NIIT, state tax, or inheritance.
+Layers of protection, in order of leverage:
+1. **Accounting identity matrix:** every strategy × tax on/off × household (unlocked, locked, couple): `gross + SS − tax − penalty − surplus + shortfall = spending` on every row, and no negative draws/balances.
+2. **Monotonicity property test:** more spending never reduces shortfall or raises the final balance. The bisection solver is only valid if this holds, so any new strategy must pass it.
+3. **Golden regression:** one representative couple (penalties, SS, purchases, curve) compared against a committed JSON; catches "every number shifted a little" drift when adding features.
+4. **Closed-form checks:** zero-everything division, annuity formula, SS months, depletion year — with strategy/order pinned explicitly so default changes cannot silently change what is measured.
+5. **Mechanism tests:** assert *why* a result differs (e.g. cost basis lowers W *because* capital-gains tax appears), not just that it differs.
+
+Conventions: tests build `Params` through `make_params()` which lists every field explicitly and fails if `Params` gains a field it does not know about. Output rows are rounded to cents, so row-level identities use a ~$0.03 tolerance; the full-precision identity (1e-6) is tested by calling the per-year solver directly. A suite-wide check was done by injecting five deliberate bugs into a scratch copy; all were caught.
+
+## 6. Scope
+
+**v0 (built):** TOML config loader; combined buckets; single nominal return and inflation; federal ordinary + LTCG tax with standard deduction, indexed by inflation; fixed withdrawal order; after-tax gross-up; bisection solver for W; flat and curve spending; dated real-dollar purchases; CSV output; closed-form unit tests.
+
+**v1 (built):**
+- Social Security for both spouses, starting at Full Retirement Age (FRA table by birth year), taxed by the provisional-income formula (0/50/85% tiers, unindexed thresholds).
+- Retirement balances split by person (`traditional_person1/2`, `roth_person1/2`).
+- 59½ rule: locked accounts are a last resort; a 10% penalty is computed, included in the after-tax gross-up, and flagged in the console and CSV.
+- Withdrawal strategies: `fixed_order`, `taxable_std_then_cash` (plan 2a), `trad_std_then_cash` (comparison plan). `run.py` prints a side-by-side strategy comparison.
+- Surplus Social Security income is saved to cash.
+
+**Known simplifications (current):**
+- One return for all buckets (no dividend/interest tax drag; cash earns the same as stocks, so cash-vs-taxable ordering cannot show growth differences).
+- Filing status fixed for the whole horizon (no death or single-filer switch); both spouses live to the horizon.
+- No RMDs, IRMAA, senior deduction, extra standard deduction for age 65+, NIIT, state tax, or inheritance.
+- Roth withdrawals before 59½ are penalized on the whole amount (conservative: contributions can in reality come out penalty-free). Roth contribution basis is not tracked.
+- No age-based penalty exceptions (Rule of 55, 72(t)/SEPP).
+- Social Security: claim age fixed at FRA; no spousal/survivor benefits; benefit stays constant in real terms.
 - Spending curve keys off person 1's age.
 - Year-based ages; ending balance measured at end of the year before the horizon birthday year.
-- Because RMDs are not modeled, "traditional" money is drawn only when the order says so.
+- Because RMDs are not modeled, "traditional" money is drawn only when the plan says so.
+
+**Finding from v1 (template data):** the "up to one standard deduction from taxable" plan (2a) produced the same W as plain cash→taxable→traditional→Roth. Reason: taxable-account withdrawals are mostly basis, and gains already enjoy a 0% long-term-gains bracket up to roughly $131k of total income (MFJ), so the standard deduction is not the scarce resource for taxable-account money. It is scarce for *ordinary* income, which is why the comparison plan fills it with traditional withdrawals. Re-test once RMDs, inheritance, and Roth conversions exist, because the ranking can change.
 
 ## 7. Roadmap (planned build order)
 
-1. Social Security + its taxation (provisional income)
+1. ~~Social Security + its taxation (provisional income)~~ — **done in v1** at FRA. Still to do: claim-age choice (62–70), spousal and survivor benefits.
 2. RMDs and the first-death / single-filer switch
 3. Roth conversions (bracket-filling, then IRMAA ceiling with 2-year lookback) and senior deduction
 4. Inheritance events + inherited IRA rules (scenario grid for timing)
@@ -279,9 +315,22 @@ Working assumption: each event ≈ $1.5M (range $1.0M–$2.0M real), majority (~
 | 2026-10-21 | No pensions in the model. |
 | 2026-10-21 | Inheritance assumed ~$1.5M each, mostly traditional IRA; timing handled via scenario grid / regret / Monte Carlo, not a single guessed date. |
 | 2026-10-21 | v0: annual steps, Python 3.11+ stdlib only (TOML config). |
+| 2026-10-22 | Retirement balances split by person so the 59½ rule uses each owner's age (also needed later for RMDs, survivor, inheritance). |
+| 2026-10-22 | SS benefit entered as monthly amount at FRA in start-year dollars; starts at FRA; COLA = inflation; surplus income saved to cash. |
+| 2026-10-22 | Penalty-free access starts the calendar year of the 59½ date if on/before June 30, else the next year (annual-model convention). |
+| 2026-10-22 | Locked retirement money is a last resort; early_access_order default Roth first (penalty only in model) then traditional. |
+| 2026-10-22 | Withdrawal plans are step lists `(category, cap)`; built-ins: fixed_order, taxable_std_then_cash, trad_std_then_cash. |
+| 2026-10-24 | `model.py` is now the user-commented master copy. Future edits are applied as small patches to it (never regenerated), so the user's comments survive. Executable code verified identical (AST comparison) when adopted. |
+| 2026-10-24 | Test suite restructured (explicit `make_params`, pinned defaults, accounting-identity matrix, monotonicity property test, golden regression, edge cases, slow-test marker). |
+| 2026-10-24 | Finding: with equal returns, withdrawal order barely matters without Social Security; with SS, trad-first beats Roth-first (~$96/mo in test scenario) because it avoids stacking on taxable benefits. |
+| 2026-10-22 | Plan 2a is kept but flagged: no W advantage over fixed order in the template run (see Finding in §6). |
 
 ## 9. Open Questions
 
 - Parents' and own ages (kept private; supply via config only) to set realistic inheritance-timing scenarios.
 - Whether legacy for children matters (decides whether to add a minimum-bequest constraint early).
-- Verify 2026 tax tables (standard deduction sources conflicted: $30,000 vs $32,200 for MFJ; v0 uses $32,200).
+- Verify 2026 tax tables (standard deduction sources conflicted: $30,000 vs $32,200 for MFJ; the model uses $32,200).
+- Roth contribution basis (penalty-free withdrawals before 59½): worth tracking if either spouse may retire early.
+- Add the extra standard deduction for age 65+ and the senior deduction (roadmap item 3).
+- Consider returning unrounded rows from `simulate()` (round only when writing CSV) so row-level tests can use 1e-6 instead of ~$0.03. Needs a small `model.py` edit — do it on the user's commented copy.
+- Should the strategy layer target tax brackets (e.g., fill the 12% bracket) rather than the standard deduction? Natural next step with Roth conversions.
