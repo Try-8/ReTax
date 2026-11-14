@@ -7,17 +7,60 @@
 # depends on each owner's age), plus new [social_security] and [strategy] blocks.
 
 [household]
-person1_birth = 1965-06-15        # you
-person2_birth = 1966-09-02        # spouse (delete the line if single)
-filing_status = "mfj"             # "mfj" or "single"
+person1_birth = 1972-06-15        # you
+person2_birth = 1972-09-02        # spouse (delete the line if single)
+filing_status = "mfj"             # "mfj" or "single"; "mfj" switches to single after the first death
+
+# Death dates (optional). Leave a line out and that person dies on their horizon_age
+# (95th) birthday. The plan runs to the LAST death. The household files jointly
+# through the year of the first death and single after that; Social Security becomes
+# the survivor's single (larger) benefit from the month of the first death.
+# Monte Carlo will later vary these. Example of an early first death:
+#   person1_death = 2057-06-15
+person1_death = 2067-06-15
+person2_death = 2067-09-02
 
 [model]
 start_year = 2027                 # balances below are as of Jan 1 of this year
-horizon_age = 95
-horizon_person = "younger"        # "person1", "person2", or "younger"
-nominal_return = 0.055            # all buckets, single rate
+horizon_age = 95                  # default longevity for anyone with no death date above
+nominal_return = 0.055            # one rate for every account. Used ONLY if you define no [[asset_class]] below
 inflation = 0.025
 tax_enabled = true                # false = no income tax and no penalties (engine testing)
+
+# ---------------------------------------------------------------------------------------------
+# Optional: asset classes. Delete this whole section (the [[asset_class]] entries and
+# [allocation]) to use the single nominal_return above for every account instead.
+#
+# Each class has a total return per year (including income), an income_yield (the part paid out
+# as dividends or interest each year; the rest is price growth), and a qualified_share (the part
+# of that income taxed at long-term capital gains rates; interest is 0). Each account then holds a
+# mix of classes, and its return is the weighted average (the mix is assumed to be rebalanced
+# back to these weights, tax-free). Dividends and interest in the CASH and TAXABLE accounts are
+# taxed every year (and reinvested); traditional, Roth and inherited accounts are not taxed until
+# money comes out. All numbers below are FAKE placeholders.
+[[asset_class]]
+name = "stocks"
+total_return = 0.07
+income_yield = 0.015
+qualified_share = 0.95
+[[asset_class]]
+name = "bonds"
+total_return = 0.04
+income_yield = 0.04
+qualified_share = 0.0
+[[asset_class]]
+name = "cash"
+total_return = 0.03
+income_yield = 0.03
+qualified_share = 0.0
+
+# One mix per account; weights must add to 1. "inherited" applies to inherited IRAs.
+[allocation]
+cash = { cash = 1.0 }
+taxable = { stocks = 0.80, bonds = 0.10, cash = 0.10 }
+traditional = { stocks = 0.60, bonds = 0.40 }
+roth = { stocks = 1.0 }
+inherited = { stocks = 0.50, bonds = 0.50 }
 
 [balances]
 cash = 50000
@@ -28,12 +71,116 @@ traditional_person2 = 600000
 roth_person1 = 120000
 roth_person2 = 80000
 
+[state]
+# State income tax. Built-in states: "IN" (Indiana), "TX", "FL" (Texas and Florida have no
+# state income tax). More can be added in statetax.py. Leave this whole block out to model
+# no state tax at all.
+residence = "IN"
+# Optional move. Give BOTH lines or neither; with neither, no move happens. The move month
+# counts as the new state, and that year's state tax is prorated by month.
+# move_date = 2035-06-01
+# move_state = "TX"
+# Local income tax in the state you live in now, as a decimal (0.017 = 1.7%). Indiana's
+# counties each levy one on top of the state rate (look up yours on the Indiana Department
+# of Revenue county rate chart). It is added to the state rate and stops when you move.
+local_tax_rate = 0.0
+
+[healthcare]
+# Health insurance premiums, paid ON TOP of your living spending, so W (monthly spending)
+# excludes them. Leave this whole block out to model no health costs.
+#
+# Before 65: marketplace coverage for each person, dollars per month in today's dollars.
+# $1,500 is a placeholder. Premium tax credits (which depend on income) are not modeled,
+# so this is treated as the full price.
+marketplace_monthly_per_person = 1500
+# From the month of each person's 65th birthday: Medicare Part B (standard premium $202.90 a
+# month in 2026, built in) plus IRMAA, an income surcharge on Parts B and D that is based on
+# your AGI from TWO YEARS EARLIER (tiers are built in). Anything else you want counted, such
+# as Medigap or a Part D drug plan, goes here per person per month (the average standalone
+# Part D premium is about $46 a month in 2026; Medigap varies widely):
+medicare_other_monthly_per_person = 0
+# Premiums have historically grown faster than inflation. Extra growth per year (0.01 = 1%):
+premium_growth_above_inflation = 0.0
+# AGI for the two years before start_year. Only matters if someone is already on Medicare in
+# the first two simulated years (it sets their IRMAA); otherwise leave at 0.
+prior_year_magi = 0
+
+[inheritance]
+# Inheritances from your parents (received by person 1). Delete this whole block for none.
+#
+# ira_withdrawal: how the inherited IRA is drawn down within the 10-year SECURE Act window.
+#   "even" = level draws (balance / years left each year), which spreads the tax;
+#   "min"  = only the IRS minimums, then whatever is left in year 10 (a big lump).
+# Either way the account must be empty by Dec 31 of the 10th year after death. Because your
+# parents were already taking RMDs, annual RMDs are also required in years 1-9, and you owe
+# the parent's own RMD for the year of death.
+ira_withdrawal = "even"
+
+# One block per parent; leave a parent out for no inheritance from that parent. All amounts are
+# in today's dollars and are assumed to keep pace with inflation until received.
+[inheritance.father]
+death_date = 2040-03-01            # THE KEY UNKNOWN: try different dates to see how much timing matters
+birth_date = 1948-05-10            # needed for his own RMD in the year of death
+share = 1.0                        # your share if siblings or others also inherit (0.5 = half)
+ira_value = 700000                 # traditional IRA balance he will leave
+# Everything else (houses, land, belongings, cash) is a list of assets. Each is sold or
+# received some months after the death; selling costs reduce it; the net proceeds go to your
+# taxable account at full cost basis (inherited property gets a stepped-up basis, so selling
+# soon after death creates essentially no taxable gain). A house you keep: just leave it out.
+[[inheritance.father.assets]]
+label = "House sale"
+value = 350000
+sale_months_after_death = 9
+sale_cost_pct = 0.07
+[[inheritance.father.assets]]
+label = "Cash and accounts"
+value = 100000
+sale_months_after_death = 0
+sale_cost_pct = 0.0
+
+[inheritance.mother]
+death_date = 2046-11-15
+birth_date = 1950-08-20
+share = 1.0
+ira_value = 500000
+[[inheritance.mother.assets]]
+label = "House sale"
+value = 300000
+sale_months_after_death = 12
+sale_cost_pct = 0.07
+[[inheritance.mother.assets]]
+label = "Land and belongings"
+value = 80000
+sale_months_after_death = 18
+sale_cost_pct = 0.10
+
+# Optional: Roth conversions. Remove the leading # on the four lines below to try it.
+# Each year from start_year to end_year, enough of your own traditional IRAs is converted to Roth to
+# fill the chosen FEDERAL ordinary bracket (0.10, 0.12, 0.22, 0.24, 0.32, 0.35 or 0.37), counting the
+# Social Security that the conversion itself makes taxable. The conversion is taxable income (federal
+# AND state, and it can raise Medicare IRMAA two years later), and its tax is paid from cash or
+# taxable money first, not from the IRA. Inherited IRAs cannot be converted. Cheapest while you are
+# in a low bracket, e.g. between retiring and starting Social Security / RMDs.
+# [roth_conversion]
+# start_year = 2027
+# end_year = 2036
+# target_bracket = 0.22
+
 [social_security]
 # Monthly benefit AT FULL RETIREMENT AGE, from each person's SSA statement,
-# in start-year (today's) dollars. v1 starts benefits at each person's FRA.
+# in start-year (today's) dollars; claim age below adjusts it.
 fra_monthly_person1 = 3200
-fra_monthly_person2 = 1800        # delete or set 0 if none
+fra_monthly_person2 = 1200        # delete or set 0 if none. If this is under half of person 1's, person 2 also
+                                  # gets a spousal top-up (50% of person 1's amount minus their own)
 benefit_multiplier = 1.0          # sensitivity knob: 0.77 = a 23% across-the-board cut
+spousal_benefit = true            # false switches the spousal top-up off (to see how much it is worth)
+# Claim age as [years, months]. Omit a line to claim at Full Retirement Age.
+# Allowed: [62, 0] through [70, 0]. Claiming before FRA reduces the benefit by
+# 5/9 of 1% per month for up to 36 months early, then 5/12 of 1% per month beyond
+# that (30% total at 62 when FRA is 67). Claiming after FRA adds 2/3 of 1% per
+# month (8% a year) up to age 70. Benefits start in the month of that birthday.
+claim_age_person1 = [67, 0]
+claim_age_person2 = [67, 0]
 
 [strategy]
 # Withdrawal plan. Choices:

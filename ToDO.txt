@@ -1,0 +1,19 @@
+
+Life changes for qualifying for health care cost reduction if paying more
+Include actual basis and track it
+Inheritance splitting with Germany
+Move to Mexico
+Review will for details
+Roth conversions start 2027 but simulation start 2030, consider conversions while working
+Add tax bracket information to the output and IRMAA ceilings
+
+Healthcare: Long-term care, out-of-pocket costs, ACA subsidies, spending curve refinements)
+
+User Interface and Results presentation
+
+Tests to run 
+claim-age sweep/comparison
+Inheritance events (scenario grid, minimax regret, Mote Carlo timing)
+Monte Carlo wrapper in general 
+After-tax estate value (Roth vs Trad)
+Lifetime tax ?? 

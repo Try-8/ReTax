@@ -44,7 +44,13 @@ LTCG_BRACKETS = {
 # and NOT indexed to inflation -- compare them to NOMINAL income, never scale.
 SS_TAX_THRESHOLDS = {"mfj": (32_000.0, 44_000.0), "single": (25_000.0, 34_000.0)}
 
-YearTax = namedtuple("YearTax", "income_tax taxable_ss provisional_income agi")
+# income_tax is FEDERAL. state_tax (state + local income tax) is filled in by the model
+# after the fact (statetax.py); inv_ordinary / inv_qualified record the dividends and interest
+# earned in taxable and cash accounts that were included in the calculation (they are inputs to
+# year_tax, reported here so the model can show them). All three default to 0 so federal-only
+# code is unchanged.
+YearTax = namedtuple("YearTax", "income_tax taxable_ss provisional_income agi state_tax inv_ordinary inv_qualified",
+                     defaults=(0.0, 0.0, 0.0))
 
 
 def _tax_on_slice(lo, hi, brackets, scale):
